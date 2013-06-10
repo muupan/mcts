@@ -33,35 +33,82 @@ using GetActionFunc = std::vector<ACTION>(*)(const STATE&);
 template<typename STATE, typename ACTION>
 using GetNextStateFunc = STATE(*)(const STATE&, const ACTION&);
 
+template<typename STATE>
+using StateToStringFunc = std::string(*)(const STATE&);
+
+template<typename ACTION>
+using ActionToStringFunc = std::string(*)(const ACTION&);
+
+template<typename STATE, typename ACTION, int ROLE_COUNT>
+class StateMachine {
+public:
+  constexpr StateMachine(
+    IsTerminalFunc<STATE> is_terminal,
+    EvaluateTerminalStateFunc<STATE, ROLE_COUNT> evaluate_terminal_state,
+    GetActiveRoleFunc<STATE> get_active_role,
+    GetActionFunc<STATE, ACTION> get_action,
+    GetNextStateFunc<STATE, ACTION> get_next_state,
+    StateToStringFunc<STATE> state_to_string,
+    ActionToStringFunc<ACTION> action_to_string) :
+      is_terminal_(is_terminal),
+      evaluate_terminal_state_(evaluate_terminal_state),
+      get_active_role_(get_active_role),
+      get_action_(get_action),
+      get_next_state_(get_next_state),
+      state_to_string_(state_to_string),
+      action_to_string_(action_to_string) {}
+  constexpr bool IsTerminal(const STATE& state) {
+    return is_terminal_(state);
+  }
+  constexpr std::array<double, ROLE_COUNT> EvaluateTerminalState(const STATE& state) {
+    return evaluate_terminal_state_(state);
+  }
+  constexpr int GetActiveRole(const STATE& state) {
+    return get_active_role_(state);
+  }
+  constexpr std::vector<ACTION> GetAction(const STATE& state) {
+    return get_action_(state);
+  }
+  constexpr STATE GetNextState(const STATE& state, const ACTION& action) {
+    return get_next_state_(state, action);
+  }
+  constexpr std::string StateToString(const STATE& state) {
+    return state_to_string_(state);
+  }
+  constexpr std::string ActionToString(const ACTION& action) {
+    return action_to_string_(action);
+  }
+private:
+  const IsTerminalFunc<STATE> is_terminal_;
+  const EvaluateTerminalStateFunc<STATE, ROLE_COUNT> evaluate_terminal_state_;
+  const GetActiveRoleFunc<STATE> get_active_role_;
+  const GetActionFunc<STATE, ACTION> get_action_;
+  const GetNextStateFunc<STATE, ACTION> get_next_state_;
+  const StateToStringFunc<STATE> state_to_string_;
+  const ActionToStringFunc<ACTION> action_to_string_;
+};
+
 template<
     typename STATE,
     typename ACTION,
-    const int ROLE_COUNT,
-    IsTerminalFunc<STATE> IS_TERMINAL,
-    EvaluateTerminalStateFunc<STATE, ROLE_COUNT> EVALUATE_TERMINAL_STATE,
-    GetActiveRoleFunc<STATE> GET_ACTIVE_ROLE,
-    GetActionFunc<STATE, ACTION> GET_ACTION,
-    GetNextStateFunc<STATE, ACTION> GET_NEXT_STATE>
+    int ROLE_COUNT,
+    const StateMachine<STATE, ACTION, ROLE_COUNT>& SM>
 class Node {
-  using NodeType = Node<STATE, ACTION, ROLE_COUNT, IS_TERMINAL, EVALUATE_TERMINAL_STATE, GET_ACTIVE_ROLE, GET_ACTION, GET_NEXT_STATE>;
+  using NodeType = Node<STATE, ACTION, ROLE_COUNT, SM>;
 public:
   Node(const STATE& state) :
     state_(state),
     visit_count_(0),
-    is_terminal_(IS_TERMINAL(state)),
+    is_terminal_(SM.IsTerminal(state)),
     is_expanded_(false),
-    role_index_(GET_ACTIVE_ROLE(state)) {
+    role_index_(GetActiveRole(state)) {
   }
   std::array<double, ROLE_COUNT> EvaluateTerminalState() const {
-    return EVALUATE_TERMINAL_STATE(state_);
+    return SM.EvaluateTerminalState(state_);
   }
   bool IsTerminal() const {
     return is_terminal_;
   }
-//  void Update(double value) {
-//    ++visit_count_;
-//    total_value_ += value;
-//  }
   std::array<double, ROLE_COUNT> Update(const std::array<double, ROLE_COUNT>& values) {
     ++visit_count_;
     for (auto i = 0; i < ROLE_COUNT; ++i) {
@@ -70,9 +117,9 @@ public:
     return values;
   }
   void Expand() {
-    const auto actions = GET_ACTION(state_);
+    const auto actions = SM.GetAction(state_);
     for (const auto action : actions) {
-      const auto& next_state = GET_NEXT_STATE(state_, action);
+      const auto& next_state = SM.GetNextState(state_, action);
       children_.emplace(action, std::make_shared<NodeType>(next_state));
     }
     is_expanded_ = true;
@@ -82,6 +129,9 @@ public:
   }
   double EvaluateChild(const ACTION& action) const {
     const auto& child = children_.at(action);
+    if (child->IsTerminal()) {
+      return child->EvaluateTerminalState()[role_index_];
+    }
     const auto child_visit_count = child->GetVisitCount();
     if (child_visit_count == 0) {
       return std::numeric_limits<double>::max();
@@ -91,16 +141,33 @@ public:
     const auto exploration_term = 2 * kUCTConstant * std::sqrt((2 * std::log(visit_count_)) / child_visit_count);
     return exploitation_term + exploration_term;
   }
+  double EvaluateChildWithRealValue(const ACTION& action) const {
+    const auto& child = children_.at(action);
+    if (child->IsTerminal()) {
+      return child->EvaluateTerminalState()[role_index_];
+    }
+    const auto child_visit_count = child->GetVisitCount();
+    if (child_visit_count == 0) {
+      return std::numeric_limits<double>::max();
+    }
+    const auto child_total_value = child->GetTotalValue()[role_index_];
+    const auto exploitation_term = child_total_value / child_visit_count;
+    return exploitation_term;
+  }
   ACTION GetBestAction() const {
+    std::cout << "GetBestAction at:" << std::endl;
+    std::cout << SM.StateToString(state_);
     auto max_value = std::numeric_limits<double>::lowest();
     ACTION action_of_max_value;
     for (const auto child : children_) {
       const auto value = EvaluateChild(child.first);
+      std::cout << "  " << SM.ActionToString(child.first) << " (" << child.second->GetVisitCount() << ") -> " << value << "(" << EvaluateChildWithRealValue(child.first) << ")" << std::endl;
       if (value > max_value) {
         max_value = value;
         action_of_max_value = child.first;
       }
     }
+    std::cout << "  best:" << SM.ActionToString(action_of_max_value) << std::endl;
     return action_of_max_value;
   }
   std::shared_ptr<NodeType> GetBestChild() const {
@@ -108,10 +175,10 @@ public:
   }
   std::string ToString() const {
     std::ostringstream oss;
+    oss << "State:" << std::endl;
+    oss << SM.StateToString(state_) << std::endl;
     for (const auto& child : children_) {
-      //TODO Needs ToString for ACTION
-      oss << "(" << child.first.first << ", " << child.first.second << ")" << " -> visit:" << child.second->GetVisitCount() << " value:" << EvaluateChild(child.first) << std::endl;
-//      oss << child.first << " -> visit:" << child.second->GetVisitCount() << " value:" << EvaluateChild(child.first) << std::endl;
+      oss << SM.ActionToString(child.first) << " -> visit:" << child.second->GetVisitCount() << " value:" << EvaluateChild(child.first) << std::endl;
     }
     return oss.str();
   }
@@ -132,20 +199,16 @@ private:
   const bool is_terminal_;
   bool is_expanded_;
   const int role_index_;
-  static constexpr double kUCTConstant = 1.0;
+  static constexpr double kUCTConstant = 0.5;
 };
 
 template<
-    typename STATE,
-    typename ACTION,
-    const int ROLE_COUNT,
-    IsTerminalFunc<STATE> IS_TERMINAL,
-    EvaluateTerminalStateFunc<STATE, ROLE_COUNT> EVALUATE_TERMINAL_STATE,
-    GetActiveRoleFunc<STATE> GET_ACTIVE_ROLE,
-    GetActionFunc<STATE, ACTION> GET_ACTION,
-    GetNextStateFunc<STATE, ACTION> GET_NEXT_STATE>
+  class STATE,
+  class ACTION,
+  int ROLE_COUNT,
+  const StateMachine<STATE, ACTION, ROLE_COUNT>& SM>
 class Searcher {
-  using NodeType = Node<STATE, ACTION, ROLE_COUNT, IS_TERMINAL, EVALUATE_TERMINAL_STATE, GET_ACTIVE_ROLE, GET_ACTION, GET_NEXT_STATE>;
+  using NodeType = Node<STATE, ACTION, ROLE_COUNT, SM>;
 public:
   Searcher(const STATE& root_state) : root_(std::make_shared<NodeType>(root_state)) {
   }
@@ -166,13 +229,17 @@ public:
 
   std::array<double, ROLE_COUNT> Simulate(const STATE& state) {
     auto temp_state = state;
-    while (!IS_TERMINAL(temp_state)) {
-      const auto actions = GET_ACTION(temp_state);
+    while (!SM.IsTerminal(temp_state)) {
+//      std::cout << SM.StateToString(temp_state);
+      const auto actions = SM.GetAction(temp_state);
       std::uniform_int_distribution<int> dist(0, actions.size() - 1);
       const auto action = actions[dist(random_engine_)];
-      temp_state = GET_NEXT_STATE(temp_state, action);
+//      std::cout << SM.ActionToString(action) << std::endl;
+      temp_state = SM.GetNextState(temp_state, action);
     }
-    return EVALUATE_TERMINAL_STATE(temp_state);
+//    std::cout << "terminal:" << std::endl;
+//    std::cout << SM.StateToString(temp_state);
+    return SM.EvaluateTerminalState(temp_state);
   }
 
   std::string ToString() const {

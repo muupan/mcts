@@ -1,5 +1,6 @@
 #include <iostream>
 #include <array>
+#include <cassert>
 #include "node.hpp"
 
 constexpr int kBoardSize = 3;
@@ -8,11 +9,13 @@ enum class TTTCell {
   empty, x, o
 };
 
+// STATE for TicTacToe
 struct TTTState {
   std::array<std::array<TTTCell, kBoardSize>, kBoardSize> board;
   int active_role;
 };
 
+// ACTION for TicTacToe
 using TTTAction = std::pair<int, int>;
 
 // Hasher for action
@@ -148,7 +151,39 @@ TTTState GetNextState(const TTTState& state, const TTTAction& action) {
   return next_state;
 }
 
-using TTTSearcher = mcts::Searcher<TTTState, TTTAction, 2, IsTerminal, EvaluateTerminalState, GetActiveRole, GetAction, GetNextState>;
+std::string StateToString(const TTTState& state) {
+  std::ostringstream oss;
+  for (auto row = 0; row < kBoardSize; ++row) {
+    for (auto col = 0; col < kBoardSize; ++col) {
+      switch (state.board[col][row]) {
+      case TTTCell::x:
+        oss << 'x';
+        break;
+      case TTTCell::o:
+        oss << 'o';
+        break;
+      case TTTCell::empty:
+        oss << 'e';
+        break;
+      default:
+        assert(false);
+        break;
+      }
+    }
+    oss << std::endl;
+  }
+  return oss.str();
+}
+
+std::string ActionToString(const TTTAction& action) {
+  std::ostringstream oss;
+  oss << "(" << action.first << ", " << action.second << ")";
+  return oss.str();
+}
+
+
+extern constexpr mcts::StateMachine<TTTState, TTTAction, 2> kTTTSM(IsTerminal, EvaluateTerminalState, GetActiveRole, GetAction, GetNextState, StateToString, ActionToString);
+using TTTSearcher = mcts::Searcher<TTTState, TTTAction, 2, kTTTSM>;
 
 int main() {
   TTTState root_state;
@@ -163,5 +198,4 @@ int main() {
     searcher.SearchOnce();
   }
   std::cout << searcher.ToString() << std::endl;
-
 }
